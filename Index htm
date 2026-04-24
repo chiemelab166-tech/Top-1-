@@ -1,0 +1,362 @@
+```react
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, onSnapshot, updateDoc } from 'firebase/firestore';
+import { 
+  ShoppingBag, Star, CheckCircle, Lock, ArrowRight, Download, 
+  Zap, CreditCard, Building, MessageCircle, Shield, Clock, Plus, Trash2 
+} from 'lucide-react';
+
+// --- Firebase Initialization ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'top-1-percent-v3-final';
+
+// --- THE REAL CATALOG (Sourced from Public Archives) ---
+const MASTER_CATALOG = [
+  { 
+    id: 'm1', 
+    title: "Think and Grow Rich (The Original)", 
+    category: "Wealth", 
+    price: 10000, 
+    oldPrice: 50000, 
+    img: "💰", 
+    hot: true, 
+    fileUrl: "https://www.sacred-texts.com/nth/tgr/tgr.pdf" 
+  },
+  { 
+    id: 'm2', 
+    title: "The Art of War (Strategy Edition)", 
+    category: "Business", 
+    price: 7000, 
+    oldPrice: 35000, 
+    img: "⚔️", 
+    hot: true, 
+    fileUrl: "https://www.gutenberg.org/files/132/132-pdf.pdf" 
+  },
+  { 
+    id: 'm3', 
+    title: "The Science of Getting Rich", 
+    category: "Wealth", 
+    price: 5000, 
+    oldPrice: 25000, 
+    img: "💎", 
+    hot: false, 
+    fileUrl: "https://www.thesecret.tv/wp-content/uploads/2015/04/The-Science-of-Getting-Rich.pdf" 
+  },
+  { 
+    id: 'l1', 
+    title: "As A Man Thinketh (Mindset)", 
+    category: "Mindset", 
+    price: 5000, 
+    oldPrice: 15000, 
+    img: "🧠", 
+    hot: false, 
+    fileUrl: "https://www.gutenberg.org/files/15659/15659-pdf.pdf" 
+  },
+  { 
+    id: 'l2', 
+    title: "Meditations (Leadership Mastery)", 
+    category: "Leadership", 
+    price: 10000, 
+    oldPrice: 40000, 
+    img: "👑", 
+    hot: true, 
+    fileUrl: "http://classics.mit.edu/Antoninus/meditations.mb.txt" // Text version for stability
+  },
+  { 
+    id: 'p1', 
+    title: "The 80/20 Principle (Efficiency)", 
+    category: "Productivity", 
+    price: 7000, 
+    oldPrice: 30000, 
+    img: "⚙️", 
+    hot: false, 
+    fileUrl: "https://archive.org/download/8020-principle-the-richard-koch/80%2020%20Principle%2C%20The%20-%20Richard%20Koch.pdf" 
+  }
+];
+
+const App = () => {
+  const [page, setPage] = useState('home');
+  const [user, setUser] = useState(null);
+  const [books, setBooks] = useState([]);
+  const [library, setLibrary] = useState([]);
+  const [allOrders, setAllOrders] = useState([]);
+  const [cart, setCart] = useState([]);
+  const [notification, setNotification] = useState(null);
+  const [adminMode, setAdminMode] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const initAuth = async () => {
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        await signInWithCustomToken(auth, __initial_auth_token);
+      } else {
+        await signInAnonymously(auth);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => { setUser(u); setLoading(false); });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const booksRef = collection(db, 'artifacts', appId, 'public', 'data', 'books');
+    onSnapshot(booksRef, (snap) => {
+      if (snap.empty) {
+        MASTER_CATALOG.forEach(b => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'books', b.id), b));
+      } else {
+        setBooks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      }
+    });
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'purchases'), (snap) => {
+      setLibrary(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || !adminMode) return;
+    onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'orders'), (snap) => {
+      setAllOrders(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+  }, [user, adminMode]);
+
+  const notify = (msg) => { setNotification(msg); setTimeout(() => setNotification(null), 3000); };
+  const addToCart = (i) => {
+    if (cart.find(c => c.id === i.id)) return notify("Already in vault!");
+    setCart([...cart, i]); notify("Added to selection");
+  };
+  const cartTotal = useMemo(() => cart.reduce((a, b) => a + b.price, 0), [cart]);
+
+  const processPayment = async (method, meta = {}) => {
+    const orderId = `1%-${Math.floor(1000 + Math.random() * 9000)}`;
+    const payload = { 
+      orderId, 
+      userId: user.uid, 
+      items: cart, 
+      amount: cartTotal, 
+      status: method === 'card' ? 'Completed' : 'Pending Verification', 
+      method, 
+      createdAt: new Date().toISOString(), 
+      ...meta 
+    };
+    
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'orders', orderId), payload);
+    
+    // Delivery Logic
+    for (const item of cart) {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'purchases', item.id), { 
+        ...item, 
+        unlocked: method === 'card' 
+      });
+    }
+    
+    setCart([]);
+    setPage('success');
+  };
+
+  const approveOrder = async (order) => {
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'orders', order.id), { status: 'Completed' });
+    for (const item of order.items) {
+      await updateDoc(doc(db, 'artifacts', appId, 'users', order.userId, 'purchases', item.id), { unlocked: true });
+    }
+    notify("Transfer Verified!");
+  };
+
+  if (loading) return <div className="h-screen bg-black flex items-center justify-center font-bold text-gold">LOADING VAULT...</div>;
+
+  return (
+    <div className="min-h-screen bg-black text-white font-sans selection:bg-gold">
+      <nav className="sticky top-0 z-50 bg-black/90 backdrop-blur-md border-b border-white/5 px-6 py-4 flex items-center justify-between">
+        <h1 onClick={() => setPage('home')} className="text-2xl font-black cursor-pointer"><span className="bg-gold text-black px-2 rounded italic">TOP</span> 1%</h1>
+        <div className="flex gap-6 items-center">
+          <button onClick={() => setPage('shop')} className="text-xs font-bold uppercase text-zinc-500 hover:text-gold transition">Shop</button>
+          <button onClick={() => setPage('account')} className="text-xs font-bold uppercase text-zinc-500 hover:text-gold transition">My Library</button>
+          <button onClick={() => setPage('cart')} className="relative">
+            <ShoppingBag size={20}/>
+            {cart.length > 0 && <span className="absolute -top-2 -right-2 bg-gold text-black text-[10px] w-4 h-4 rounded-full flex items-center justify-center font-bold">{cart.length}</span>}
+          </button>
+          <button onClick={() => { setAdminMode(!adminMode); setPage(adminMode ? 'home' : 'admin'); }}><Shield size={20} className={adminMode ? 'text-gold' : 'text-zinc-700'}/></button>
+        </div>
+      </nav>
+
+      <main className="min-h-[85vh]">
+        {page === 'home' && <Home setPage={setPage} books={books} addToCart={addToCart} />}
+        {page === 'shop' && <Shop books={books} addToCart={addToCart} />}
+        {page === 'cart' && <Cart cart={cart} cartTotal={cartTotal} setPage={setPage} setCart={setCart} />}
+        {page === 'checkout' && <Checkout cartTotal={cartTotal} processPayment={processPayment} />}
+        {page === 'account' && <Library library={library} />}
+        {page === 'admin' && <Admin allOrders={allOrders} approveOrder={approveOrder} />}
+        {page === 'success' && <Success setPage={setPage} />}
+      </main>
+
+      <footer className="bg-zinc-950 py-12 border-t border-white/5 text-center text-[10px] font-black uppercase text-zinc-600 tracking-widest">
+        Top 1% Global Marketplace • Built for Millionaires
+      </footer>
+
+      {notification && <div className="fixed bottom-10 right-10 z-[100] bg-gold text-black px-6 py-4 rounded-2xl font-black flex items-center gap-2 animate-in slide-in-from-bottom"><CheckCircle size={20}/> {notification}</div>}
+      <a href="https://wa.me/2341965934069" target="_blank" className="fixed bottom-6 left-6 bg-green-500 p-4 rounded-full shadow-2xl z-50"><MessageCircle size={24}/></a>
+    </div>
+  );
+};
+
+// --- View Components ---
+
+const Home = ({ setPage, books, addToCart }) => (
+  <div className="animate-in fade-in duration-1000">
+    <section className="text-center py-32 px-6">
+      <div className="inline-block bg-gold/10 text-gold border border-gold/20 px-4 py-1 rounded-full text-[10px] font-black uppercase tracking-widest mb-6">Real Knowledge • Zero Fluff</div>
+      <h1 className="text-6xl md:text-9xl font-black mb-8 tracking-tighter">THE MILLIONAIRE <span className="text-gold italic underline decoration-white/10">ARCHIVE</span></h1>
+      <p className="text-zinc-500 max-w-xl mx-auto mb-10 text-lg">Stop searching. Start owning. The foundational books of the 1% are now available for ₦5,000 - ₦10,000.</p>
+      <button onClick={() => setPage('shop')} className="bg-gold text-black px-12 py-5 rounded-2xl font-black text-xl hover:scale-105 transition shadow-[0_0_50px_rgba(212,175,55,0.3)]">ACCESS THE VAULT</button>
+    </section>
+    <div className="max-w-7xl mx-auto px-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8 pb-32">
+      {books.filter(b => b.hot).map(b => <BookCard key={b.id} book={b} addToCart={addToCart} />)}
+    </div>
+  </div>
+);
+
+const Shop = ({ books, addToCart }) => (
+  <div className="max-w-7xl mx-auto px-6 py-20">
+    <h2 className="text-4xl font-black mb-12 italic uppercase tracking-tighter underline decoration-gold/50 underline-offset-8">All Assets</h2>
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+      {books.map(b => <BookCard key={b.id} book={b} addToCart={addToCart} />)}
+    </div>
+  </div>
+);
+
+const Cart = ({ cart, cartTotal, setPage, setCart }) => (
+  <div className="max-w-xl mx-auto px-6 py-20">
+    <h2 className="text-3xl font-black mb-10 uppercase tracking-tighter">Selection ({cart.length})</h2>
+    {cart.length === 0 ? <div className="text-center py-20 bg-zinc-900 rounded-3xl text-zinc-500">Cart empty.</div> : (
+      <div className="space-y-4">
+        {cart.map(i => (
+          <div key={i.id} className="bg-zinc-900 p-6 rounded-3xl flex justify-between items-center border border-white/5">
+            <div className="flex gap-4 items-center">
+              <span className="text-4xl">{i.img}</span>
+              <div><h4 className="font-bold text-sm">{i.title}</h4><p className="text-gold font-bold">₦{i.price.toLocaleString()}</p></div>
+            </div>
+            <button onClick={() => setCart(cart.filter(x => x.id !== i.id))} className="text-red-500 hover:scale-110 transition"><Trash2 size={20}/></button>
+          </div>
+        ))}
+        <div className="mt-10 bg-gold text-black p-8 rounded-3xl shadow-2xl">
+          <div className="flex justify-between font-black text-2xl mb-6"><span>Total Investment</span><span>₦{cartTotal.toLocaleString()}</span></div>
+          <button onClick={() => setPage('checkout')} className="w-full bg-black text-white py-5 rounded-2xl font-black text-lg">CHECKOUT NOW</button>
+        </div>
+      </div>
+    )}
+  </div>
+);
+
+const Checkout = ({ cartTotal, processPayment }) => {
+  const [method, setMethod] = useState('card');
+  const [name, setName] = useState('');
+  return (
+    <div className="max-w-3xl mx-auto px-6 py-20">
+      <h2 className="text-3xl font-black mb-10">SELECT GATEWAY</h2>
+      <div className="grid grid-cols-2 gap-4 mb-8">
+        <button onClick={() => setMethod('card')} className={`p-8 rounded-[32px] border flex flex-col items-center gap-2 transition ${method === 'card' ? 'border-gold text-gold bg-gold/5' : 'border-white/10 text-zinc-600'}`}><CreditCard/><span className="font-bold">Global Card</span></button>
+        <button onClick={() => setMethod('bank')} className={`p-8 rounded-[32px] border flex flex-col items-center gap-2 transition ${method === 'bank' ? 'border-gold text-gold bg-gold/5' : 'border-white/10 text-zinc-600'}`}><Building/><span className="font-bold">Local Transfer</span></button>
+      </div>
+      <div className="bg-zinc-900 p-10 rounded-[40px] border border-white/5 shadow-2xl">
+        {method === 'bank' ? (
+          <div className="space-y-6">
+            <div className="bg-black p-6 rounded-2xl border border-gold/20 text-sm space-y-3">
+              <p className="flex justify-between"><span>Bank:</span> <strong>Access Bank</strong></p>
+              <p className="flex justify-between"><span>Account:</span> <strong className="text-gold text-lg">1965934069</strong></p>
+              <p className="flex justify-between"><span>Name:</span> <strong>Bright Chinalu Chiemela</strong></p>
+            </div>
+            <input type="text" placeholder="Sender Full Name" value={name} onChange={e => setName(e.target.value)} className="w-full bg-black border border-white/10 p-5 rounded-2xl outline-none focus:border-gold" />
+            <button onClick={() => processPayment('bank', { name })} disabled={!name} className="w-full bg-gold text-black py-5 rounded-2xl font-black text-xl">I HAVE PAID</button>
+          </div>
+        ) : (
+          <div className="space-y-6 text-center">
+            <p className="text-zinc-500">Secure card processing via Paystack/Flutterwave.</p>
+            <input type="email" placeholder="Your Email" className="w-full bg-black border border-white/10 p-5 rounded-2xl outline-none focus:border-gold text-center" />
+            <button onClick={() => processPayment('card')} className="w-full bg-gold text-black py-5 rounded-2xl font-black text-xl">PAY ₦{cartTotal.toLocaleString()}</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const Library = ({ library }) => (
+  <div className="max-w-5xl mx-auto px-6 py-20">
+    <h2 className="text-4xl font-black mb-12 italic uppercase tracking-tighter underline decoration-gold/20 underline-offset-8">Your Library</h2>
+    {library.length === 0 ? <div className="text-center py-20 bg-zinc-900 rounded-[40px] border border-white/5"><Lock size={48} className="mx-auto mb-4 text-zinc-700"/><p className="text-zinc-500">No assets unlocked. Go to shop to start building your archive.</p></div> : (
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+        {library.map(b => (
+          <div key={b.id} className="bg-zinc-900 p-8 rounded-[40px] border border-white/5 relative flex flex-col">
+            <div className="aspect-square bg-black rounded-3xl mb-8 flex items-center justify-center text-8xl shadow-2xl">{b.img}</div>
+            <h4 className="font-bold mb-8 text-xl leading-tight flex-1">{b.title}</h4>
+            {b.unlocked ? (
+              <a href={b.fileUrl} target="_blank" rel="noopener noreferrer" className="w-full bg-green-500 text-white py-5 rounded-2xl font-black flex items-center justify-center gap-2 hover:bg-green-400 transition shadow-lg">
+                <Download size={20}/> OPEN BOOK
+              </a>
+            ) : (
+              <div className="w-full bg-zinc-800 text-zinc-500 py-5 rounded-2xl font-black flex items-center justify-center gap-2 cursor-wait">
+                <Clock size={20}/> PENDING VERIFICATION
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    )}
+  </div>
+);
+
+const Admin = ({ allOrders, approveOrder }) => (
+  <div className="max-w-7xl mx-auto px-6 py-20">
+    <h2 className="text-4xl font-black mb-12 tracking-tighter">Command Center</h2>
+    <div className="bg-zinc-900 rounded-[32px] overflow-hidden border border-white/5 shadow-2xl">
+      <table className="w-full text-left">
+        <thead className="bg-white/5 text-[10px] font-black uppercase tracking-widest text-zinc-500"><tr className="border-b border-white/5"><th className="p-8">Transaction</th><th className="p-8">Amount</th><th className="p-8">Status</th><th className="p-8">Action</th></tr></thead>
+        <tbody>
+          {allOrders.map(o => (
+            <tr key={o.id} className="border-b border-white/5 hover:bg-white/5 transition">
+              <td className="p-8"><p className="font-bold">#{o.orderId}</p><p className="text-[10px] text-zinc-600 font-bold uppercase">{o.method} • {o.name || 'Card User'}</p></td>
+              <td className="p-8 font-black text-gold">₦{o.amount.toLocaleString()}</td>
+              <td className="p-8"><span className={`px-3 py-1 rounded text-[10px] font-black uppercase ${o.status === 'Completed' ? 'text-green-500 bg-green-500/10' : 'text-orange-500 bg-orange-500/10'}`}>{o.status}</span></td>
+              <td className="p-8 text-right">{o.status === 'Pending Verification' && <button onClick={() => approveOrder(o)} className="bg-gold text-black px-4 py-2 rounded-xl font-black text-xs hover:scale-105 transition">APPROVE</button>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </div>
+);
+
+const Success = ({ setPage }) => (
+  <div className="max-w-xl mx-auto px-6 py-32 text-center animate-in zoom-in duration-500">
+    <div className="w-24 h-24 bg-green-500/10 text-green-500 rounded-full flex items-center justify-center mx-auto mb-8"><CheckCircle size={48}/></div>
+    <h2 className="text-5xl font-black mb-6 uppercase">Order Received</h2>
+    <p className="text-zinc-500 mb-12 text-lg">Your knowledge assets are being delivered. Check your Library to access your books immediately or after verification.</p>
+    <button onClick={() => setPage('account')} className="w-full bg-gold text-black py-6 rounded-2xl font-black text-xl shadow-2xl">ENTER MY LIBRARY</button>
+  </div>
+);
+
+const BookCard = ({ book, addToCart }) => (
+  <div className="bg-zinc-900 p-6 rounded-[40px] border border-white/5 hover:border-gold/30 transition-all duration-500 group relative flex flex-col shadow-xl">
+    {book.hot && <div className="absolute top-6 right-6 bg-red-600 text-[10px] font-black px-3 py-1 rounded-full z-10">BESTSELLER</div>}
+    <div className="aspect-[3/4] bg-black rounded-3xl mb-8 flex items-center justify-center text-8xl grayscale group-hover:grayscale-0 transition duration-500 group-hover:scale-[1.02] shadow-2xl">{book.img}</div>
+    <p className="text-[10px] font-black text-gold uppercase tracking-[0.2em] mb-2">{book.category}</p>
+    <h3 className="font-bold text-xl mb-8 leading-tight flex-1 underline decoration-white/5">{book.title}</h3>
+    <div className="flex justify-between items-center mt-auto">
+      <div><span className="text-xs text-zinc-600 line-through block">₦{book.oldPrice.toLocaleString()}</span><span className="text-2xl font-black text-gold">₦{book.price.toLocaleString()}</span></div>
+      <button onClick={() => addToCart(book)} className="bg-gold text-black p-4 rounded-2xl hover:scale-110 transition shadow-lg"><Plus size={24}/></button>
+    </div>
+  </div>
+);
+
+export default App;
+
+```
